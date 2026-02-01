@@ -1,3 +1,6 @@
+首先，因为本人记忆力不足加上最近事情繁多，所以暂时让copilot总结一个readme出来，之后会补上完整的readme
+其次，为了防止本人失忆，router包下面我给每个模块都放了readme，以及util包下面的filter放了example和readme
+
 # AbstractManager
 
 轻量级的 Go 泛型 Service + HTTP 路由管理器，封装了常见的数据库（GORM）与缓存（Redis）操作，以及基于 ServiceManager 的 HTTP 路由快速注册方案，目标是快速搭建标准化的 CRUD / 查询 / 缓存服务。
