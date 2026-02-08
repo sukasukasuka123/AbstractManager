@@ -2,10 +2,11 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
-	"github.com/redis/go-redis/v9" // 确保导入了正确的 redis 包
+	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
 
@@ -15,6 +16,17 @@ type WritedownSingleOptions struct {
 	Overwrite  bool
 	NX         bool
 	XX         bool
+}
+
+// ----------------- 核心写缓存方法 -----------------
+
+// marshalForRedis 统一处理序列化
+func marshalForRedis[T any](data *T) ([]byte, error) {
+	if data == nil {
+		return nil, fmt.Errorf("cannot marshal nil data")
+	}
+	// 使用 JSON 序列化，避免 BinaryMarshaler 错误
+	return json.Marshal(data)
 }
 
 // WritedownSingle 将单个数据写入缓存
@@ -28,30 +40,30 @@ func (sm *ServiceManager[T]) WritedownSingle(
 		opts = &WritedownSingleOptions{Expiration: 1 * time.Hour, Overwrite: true}
 	}
 
-	rdb := GetRedis() // 🛠️ 修复：变量名改为 rdb，避免遮蔽 redis 包名
+	rdb := GetRedis()
 
-	if !opts.Overwrite && !opts.NX {
-		if rdb.Exists(ctx, key).Val() > 0 {
-			return fmt.Errorf("key already exists: %s", key)
-		}
-	}
-
-	var err error
-	if opts.NX {
-		err = rdb.SetNX(ctx, key, data, opts.Expiration).Err()
-	} else if opts.XX {
-		err = rdb.SetXX(ctx, key, data, opts.Expiration).Err()
-	} else {
-		err = rdb.Set(ctx, key, data, opts.Expiration).Err()
-	}
-
+	valueBytes, err := marshalForRedis(data)
 	if err != nil {
-		return fmt.Errorf("failed to write cache: %w", err)
+		return fmt.Errorf("failed to marshal data for key %s: %w", key, err)
+	}
+
+	var cmdErr error
+	if opts.NX {
+		cmdErr = rdb.SetNX(ctx, key, valueBytes, opts.Expiration).Err()
+	} else if opts.XX {
+		cmdErr = rdb.SetXX(ctx, key, valueBytes, opts.Expiration).Err()
+	} else {
+		cmdErr = rdb.Set(ctx, key, valueBytes, opts.Expiration).Err()
+	}
+
+	if cmdErr != nil {
+		return fmt.Errorf("failed to write cache for key %s: %w", key, cmdErr)
 	}
 	return nil
 }
 
-// WritedownSingleWithLock 修正了 redis.Nil 的访问方式
+// ----------------- 带锁写缓存 -----------------
+
 func (sm *ServiceManager[T]) WritedownSingleWithLock(
 	ctx context.Context,
 	key string,
@@ -60,26 +72,29 @@ func (sm *ServiceManager[T]) WritedownSingleWithLock(
 	lockTimeout time.Duration,
 ) (*T, error) {
 	rdb := GetRedis()
-
 	var result T
-	// 🛠️ 修复：使用 redis.Nil (来自包) 而不是 rdb.Nil
-	err := rdb.Get(ctx, key).Scan(&result)
+
+	// 尝试直接读取缓存
+	val, err := rdb.Get(ctx, key).Bytes()
 	if err == nil {
-		return &result, nil
+		if err := json.Unmarshal(val, &result); err == nil {
+			return &result, nil
+		}
 	}
 
 	lockKey := fmt.Sprintf("lock:%s", key)
 	lockValue := fmt.Sprintf("%d", time.Now().UnixNano())
-
 	locked, _ := rdb.SetNX(ctx, lockKey, lockValue, lockTimeout).Result()
 	if !locked {
 		time.Sleep(50 * time.Millisecond)
-		if err := rdb.Get(ctx, key).Scan(&result); err == nil {
-			return &result, nil
+		val, err := rdb.Get(ctx, key).Bytes()
+		if err == nil {
+			if err := json.Unmarshal(val, &result); err == nil {
+				return &result, nil
+			}
 		}
 		return nil, fmt.Errorf("failed to acquire lock and cache miss for %s", key)
 	}
-
 	defer rdb.Del(ctx, lockKey)
 
 	data, err := sm.GetSingle(ctx, queryFunc, nil)
@@ -90,11 +105,11 @@ func (sm *ServiceManager[T]) WritedownSingleWithLock(
 	if err := sm.WritedownSingle(ctx, key, data, &WritedownSingleOptions{Expiration: expiration, Overwrite: true}); err != nil {
 		return nil, err
 	}
-
 	return data, nil
 }
 
-// WritedownSingleWithVersion 修正了 redis.Tx 和 redis.Pipeliner 类型报错
+// ----------------- 带版本控制写缓存 -----------------
+
 func (sm *ServiceManager[T]) WritedownSingleWithVersion(
 	ctx context.Context,
 	key string,
@@ -105,49 +120,48 @@ func (sm *ServiceManager[T]) WritedownSingleWithVersion(
 	rdb := GetRedis()
 	versionKey := key + ":version"
 
-	// 🛠️ 修复：Watch 的回调函数中，redis.Tx 此时指向的是包里的类型
-	err := rdb.Watch(ctx, func(tx *redis.Tx) error {
+	valueBytes, err := marshalForRedis(data)
+	if err != nil {
+		return fmt.Errorf("failed to marshal data for key %s: %w", key, err)
+	}
+
+	// 使用 Watch 保证原子性
+	return rdb.Watch(ctx, func(tx *redis.Tx) error {
 		currentVersion, err := tx.Get(ctx, versionKey).Int64()
-		// 🛠️ 修复：使用 redis.Nil
 		if err != nil && err != redis.Nil {
 			return err
 		}
-
 		if err != redis.Nil && currentVersion >= version {
 			return fmt.Errorf("version outdated: current %d, provided %d", currentVersion, version)
 		}
 
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-			pipe.Set(ctx, key, data, expiration)
+			pipe.Set(ctx, key, valueBytes, expiration)
 			pipe.Set(ctx, versionKey, version, expiration)
 			return nil
 		})
 		return err
 	}, key, versionKey)
-
-	return err
 }
 
-// WritedownSingleAsync 异步写入缓存（不阻塞主流程）
+// ----------------- 异步写缓存 -----------------
+
 func (sm *ServiceManager[T]) WritedownSingleAsync(
 	ctx context.Context,
 	key string,
 	data *T,
 	expiration time.Duration,
 ) {
-	// 💡 注意：这里必须脱离原 ctx，避免因主请求结束导致异步操作被 Cancel
 	go func() {
 		asyncCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-
 		if err := sm.WritedownSingle(asyncCtx, key, data, &WritedownSingleOptions{Expiration: expiration}); err != nil {
-			// 这种错误应记录日志，但不应抛给用户
 			fmt.Printf("[AsyncCache] Failed for key %s: %v\n", key, err)
 		}
 	}()
 }
 
-// --- 便捷封装方法 ---
+// ----------------- 便捷方法 -----------------
 
 func (sm *ServiceManager[T]) WritedownSingleByID(ctx context.Context, id interface{}, opts *WritedownSingleOptions) error {
 	key := sm.buildCacheKey(id)

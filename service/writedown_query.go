@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -59,7 +60,12 @@ func (sm *ServiceManager[T]) WritedownQuery(
 					continue
 				}
 			}
-			cacheItems[key] = item
+			valueBytes, err := json.Marshal(item)
+			if err != nil {
+				return fmt.Errorf("failed to marshal item for key %s: %w", key, err)
+			}
+
+			cacheItems[key] = valueBytes // 存 []byte
 		}
 
 		if len(cacheItems) > 0 {
@@ -89,32 +95,30 @@ func (sm *ServiceManager[T]) WritedownWithPipeline(
 	}
 
 	if opts == nil {
-		opts = &WritedownQueryOptions{
-			Expiration: 1 * time.Hour,
-			BatchSize:  1000,
-			Overwrite:  true,
-		}
+		opts = &WritedownQueryOptions{Expiration: 1 * time.Hour, BatchSize: 1000, Overwrite: true}
 	}
 
-	redis := GetRedis()
-	batchSize := opts.BatchSize
-	if batchSize <= 0 {
-		batchSize = 1000
-	}
+	rdb := GetRedis()
 
-	for i := 0; i < len(data); i += batchSize {
-		end := i + batchSize
+	for i := 0; i < len(data); i += opts.BatchSize {
+		end := i + opts.BatchSize
 		if end > len(data) {
 			end = len(data)
 		}
 
-		// 修复 3: redis 变量本身就是 Client，直接调用 Pipeline()
-		pipe := redis.Pipeline()
+		pipe := rdb.Pipeline()
 
 		for j := i; j < end; j++ {
 			item := &data[j]
 			key := buildKeyFunc(item)
-			pipe.Set(ctx, key, item, opts.Expiration)
+
+			// ★★★ 核心修复：先 marshal
+			valueBytes, err := json.Marshal(item)
+			if err != nil {
+				return fmt.Errorf("failed to marshal item for key %s: %w", key, err)
+			}
+
+			pipe.Set(ctx, key, valueBytes, opts.Expiration)
 		}
 
 		if _, err := pipe.Exec(ctx); err != nil {

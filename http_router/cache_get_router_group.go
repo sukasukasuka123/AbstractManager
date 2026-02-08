@@ -13,86 +13,17 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// ========== 预定义 Lookup 查询方法 ==========
-
-type LookupQueryMethod[T any] struct {
-	Name             string
-	Service          *service.ServiceManager[T]
-	KeyPattern       string                                                           // Redis 键模式，如 "user:*"
-	CacheExpire      time.Duration                                                    // 缓存过期时间
-	FallbackToDB     bool                                                             // 是否回源数据库
-	CustomFilterFunc func(context.Context, *redis.Client, []string) ([]string, error) // 自定义过滤函数
-}
-
-func (m *LookupQueryMethod[T]) Execute(ctx context.Context, filters []filter_translator.RedisFilter) (map[string]*T, []string, error) {
-	// 1. 获取所有匹配的键
-	redisClient := service.GetRedis()
-	allKeys, err := redisClient.Keys(ctx, m.KeyPattern).Result()
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get keys: %w", err)
-	}
-
-	if len(allKeys) == 0 {
-		return make(map[string]*T), []string{}, nil
-	}
-
-	// 2. 应用自定义过滤（如果有）
-	if m.CustomFilterFunc != nil {
-		allKeys, err = m.CustomFilterFunc(ctx, redisClient, allKeys)
-		if err != nil {
-			return nil, nil, fmt.Errorf("custom filter failed: %w", err)
-		}
-	}
-
-	// 3. 应用过滤器（使用示例中的 ApplyRedisFilters）
-	filteredKeys, err := filter_translator.ApplyRedisFilters(ctx, redisClient, allKeys, filters)
-	if err != nil {
-		return nil, nil, fmt.Errorf("filter application failed: %w", err)
-	}
-
-	// 4. 从缓存查询数据
-	opts := &service.LookupQueryOptions{
-		KeyPattern:   m.KeyPattern,
-		CacheExpire:  m.CacheExpire,
-		FallbackToDB: m.FallbackToDB,
-	}
-
-	result, err := m.Service.LookupQuery(ctx, filteredKeys, opts)
-	if err != nil {
-		return nil, nil, fmt.Errorf("lookup query failed: %w", err)
-	}
-
-	return result, filteredKeys, nil
-}
-
-// ========== Lookup 查询方法注册表 ==========
-
-type LookupMethodRegistry[T any] struct {
-	methods map[string]*LookupQueryMethod[T]
-}
-
-func NewLookupMethodRegistry[T any]() *LookupMethodRegistry[T] {
-	return &LookupMethodRegistry[T]{
-		methods: make(map[string]*LookupQueryMethod[T]),
-	}
-}
-
-func (r *LookupMethodRegistry[T]) Register(method *LookupQueryMethod[T]) {
-	r.methods[method.Name] = method
-}
-
-func (r *LookupMethodRegistry[T]) Get(name string) (*LookupQueryMethod[T], bool) {
-	method, ok := r.methods[name]
-	return method, ok
-}
-
-// ========== Gin Lookup 路由组 ==========
+// ========== Lookup 路由组 ==========
 
 type LookupRouterGroup[T any] struct {
 	RouterGroup        *gin.RouterGroup
 	Service            *service.ServiceManager[T]
-	MethodRegistry     *LookupMethodRegistry[T]
 	TranslatorRegistry *filter_translator.RedisTranslatorRegistry
+
+	// 预定义的查询方法配置
+	defaultKeyPattern  string
+	defaultCacheExpire time.Duration
+	customFilterFunc   func(context.Context, *redis.Client, []string) ([]string, error)
 }
 
 func NewLookupRouterGroup[T any](
@@ -102,48 +33,26 @@ func NewLookupRouterGroup[T any](
 	return &LookupRouterGroup[T]{
 		RouterGroup:        rg,
 		Service:            service,
-		MethodRegistry:     NewLookupMethodRegistry[T](),
 		TranslatorRegistry: filter_translator.DefaultRedisRegistry,
+		defaultCacheExpire: 1 * time.Hour, // 默认1小时
 	}
 }
 
-// ========== 注册预定义 Lookup 查询方法 ==========
+// ========== 配置方法（在注册路由前调用）==========
 
-func (lrg *LookupRouterGroup[T]) RegisterMethod(
-	name string,
-	keyPattern string,
-	cacheExpire time.Duration,
-	fallbackToDB bool,
-	customFilterFunc func(context.Context, *redis.Client, []string) ([]string, error),
-) {
-	method := &LookupQueryMethod[T]{
-		Name:             name,
-		Service:          lrg.Service,
-		KeyPattern:       keyPattern,
-		CacheExpire:      cacheExpire,
-		FallbackToDB:     fallbackToDB,
-		CustomFilterFunc: customFilterFunc,
-	}
-	lrg.MethodRegistry.Register(method)
+// SetDefaults 设置默认的 key 模式和缓存过期时间
+func (lrg *LookupRouterGroup[T]) SetDefaults(keyPattern string, cacheExpire time.Duration) *LookupRouterGroup[T] {
+	lrg.defaultKeyPattern = keyPattern
+	lrg.defaultCacheExpire = cacheExpire
+	return lrg
 }
 
-// RegisterListMethod 注册基础列表方法（查询所有键）
-func (lrg *LookupRouterGroup[T]) RegisterListMethod(keyPattern string, cacheExpire time.Duration) {
-	lrg.RegisterMethod("list", keyPattern, cacheExpire, false, nil)
-}
-
-// RegisterActiveListMethod 注册活跃数据列表（通过自定义过滤器）
-func (lrg *LookupRouterGroup[T]) RegisterActiveListMethod(
-	keyPattern string,
-	cacheExpire time.Duration,
-	activeFilterFunc func(context.Context, *redis.Client, []string) ([]string, error),
-) {
-	lrg.RegisterMethod("active_list", keyPattern, cacheExpire, false, activeFilterFunc)
-}
-
-// RegisterFallbackMethod 注册带数据库回源的方法
-func (lrg *LookupRouterGroup[T]) RegisterFallbackMethod(keyPattern string, cacheExpire time.Duration) {
-	lrg.RegisterMethod("fallback_list", keyPattern, cacheExpire, true, nil)
+// SetCustomFilter 设置自定义过滤函数（如活跃用户过滤）
+func (lrg *LookupRouterGroup[T]) SetCustomFilter(
+	filterFunc func(context.Context, *redis.Client, []string) ([]string, error),
+) *LookupRouterGroup[T] {
+	lrg.customFilterFunc = filterFunc
+	return lrg
 }
 
 // ========== 路由注册 ==========
@@ -158,8 +67,10 @@ func (lrg *LookupRouterGroup[T]) RegisterRoutes(basePath string) {
 // ========== 请求/响应结构 ==========
 
 type LookupRequest struct {
-	Method  string                          `json:"method"`
-	Filters []filter_translator.FilterParam `json:"filters"`
+	KeyPattern      string                          `json:"key_pattern"`       // 可选，覆盖默认 key 模式
+	Filters         []filter_translator.FilterParam `json:"filters"`           // 过滤条件
+	UseCustomFilter bool                            `json:"use_custom_filter"` // 是否使用自定义过滤器
+	FallbackToDB    bool                            `json:"fallback_db"`       // 是否回源数据库
 }
 
 type LookupResponse[T any] struct {
@@ -171,8 +82,9 @@ type LookupResponse[T any] struct {
 }
 
 type LookupCountRequest struct {
-	Method  string                          `json:"method"`
-	Filters []filter_translator.FilterParam `json:"filters"`
+	KeyPattern      string                          `json:"key_pattern"`
+	Filters         []filter_translator.FilterParam `json:"filters"`
+	UseCustomFilter bool                            `json:"use_custom_filter"`
 }
 
 type LookupCountResponse struct {
@@ -192,32 +104,105 @@ type InvalidateResponse struct {
 	Count   int    `json:"count"` // 删除的键数量
 }
 
-// ========== 处理器 ==========
+// ========== 核心查询逻辑 ==========
+
+func (lrg *LookupRouterGroup[T]) executeLookup(
+	ctx context.Context,
+	keyPattern string,
+	filters []filter_translator.FilterParam,
+	useCustomFilter bool,
+	fallbackToDB bool,
+) (map[string]*T, []string, error) {
+
+	// 1. 获取所有匹配的键
+	redisClient := service.GetRedis()
+	allKeys, err := redisClient.Keys(ctx, keyPattern).Result()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get keys: %w", err)
+	}
+
+	if len(allKeys) == 0 {
+		return make(map[string]*T), []string{}, nil
+	}
+
+	// 2. 应用自定义过滤（如果启用）
+	if useCustomFilter && lrg.customFilterFunc != nil {
+		allKeys, err = lrg.customFilterFunc(ctx, redisClient, allKeys)
+		if err != nil {
+			return nil, nil, fmt.Errorf("custom filter failed: %w", err)
+		}
+	}
+
+	// 3. 翻译并应用通用过滤器
+	if len(filters) > 0 {
+		redisFilters, err := lrg.TranslatorRegistry.TranslateBatch(filters)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid filters: %w", err)
+		}
+
+		allKeys, err = filter_translator.ApplyRedisFilters(ctx, redisClient, allKeys, redisFilters)
+		if err != nil {
+			return nil, nil, fmt.Errorf("filter application failed: %w", err)
+		}
+	}
+
+	// 4. 从缓存查询数据
+	opts := &service.LookupQueryOptions{
+		KeyPattern:   keyPattern,
+		CacheExpire:  lrg.defaultCacheExpire,
+		FallbackToDB: fallbackToDB,
+	}
+
+	result, err := lrg.Service.LookupQuery(ctx, allKeys, opts)
+	if err != nil {
+		return nil, nil, fmt.Errorf("lookup query failed: %w", err)
+	}
+
+	return result, allKeys, nil
+}
+
+// ========== HTTP 处理器 ==========
 
 func (lrg *LookupRouterGroup[T]) HandleLookup(c *gin.Context) {
 	var req LookupRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "invalid request", "error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "invalid request",
+			"error":   err.Error(),
+		})
 		return
 	}
 
-	method, ok := lrg.MethodRegistry.Get(req.Method)
-	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": fmt.Sprintf("unknown method: %s", req.Method)})
-		return
+	// 使用请求中的 key pattern，如果没有则使用默认值
+	keyPattern := req.KeyPattern
+	if keyPattern == "" {
+		keyPattern = lrg.defaultKeyPattern
 	}
 
-	// 翻译过滤器
-	filters, err := lrg.TranslatorRegistry.TranslateBatch(req.Filters)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "invalid filters", "error": err.Error()})
+	if keyPattern == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "key_pattern is required (or set default via SetDefaults)",
+		})
 		return
 	}
 
 	// 执行查询
-	result, keys, err := method.Execute(c.Request.Context(), filters)
+	result, keys, err := lrg.executeLookup(
+		c.Request.Context(),
+		keyPattern,
+		req.Filters,
+		req.UseCustomFilter,
+		req.FallbackToDB,
+	)
+
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "lookup failed", "error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "lookup failed",
+			"error":   err.Error(),
+		})
 		return
 	}
 
@@ -235,7 +220,7 @@ func (lrg *LookupRouterGroup[T]) HandleGetByKey(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	opts := &service.LookupSingleOptions{
-		CacheExpire:  1 * time.Hour,
+		CacheExpire:  lrg.defaultCacheExpire,
 		FallbackToDB: false,
 		Refresh:      false,
 	}
@@ -243,40 +228,66 @@ func (lrg *LookupRouterGroup[T]) HandleGetByKey(c *gin.Context) {
 	result, err := lrg.Service.LookupSingle(ctx, key, opts)
 	if err != nil {
 		if err == redis.Nil {
-			c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "key not found"})
+			c.JSON(http.StatusNotFound, gin.H{
+				"code":    404,
+				"message": "key not found",
+			})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "lookup failed", "error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "lookup failed",
+			"error":   err.Error(),
+		})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success", "data": result})
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "success",
+		"data":    result,
+	})
 }
 
 func (lrg *LookupRouterGroup[T]) HandleCount(c *gin.Context) {
 	var req LookupCountRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "invalid request", "error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "invalid request",
+			"error":   err.Error(),
+		})
 		return
 	}
 
-	method, ok := lrg.MethodRegistry.Get(req.Method)
-	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": fmt.Sprintf("unknown method: %s", req.Method)})
+	keyPattern := req.KeyPattern
+	if keyPattern == "" {
+		keyPattern = lrg.defaultKeyPattern
+	}
+
+	if keyPattern == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "key_pattern is required",
+		})
 		return
 	}
 
-	// 翻译过滤器
-	filters, err := lrg.TranslatorRegistry.TranslateBatch(req.Filters)
+	// 执行查询（只需要 keys，不需要数据）
+	_, keys, err := lrg.executeLookup(
+		c.Request.Context(),
+		keyPattern,
+		req.Filters,
+		req.UseCustomFilter,
+		false, // 计数不需要回源
+	)
+
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "invalid filters", "error": err.Error()})
-		return
-	}
-
-	// 执行查询（只计数，不获取数据）
-	_, keys, err := method.Execute(c.Request.Context(), filters)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "count failed", "error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "count failed",
+			"error":   err.Error(),
+		})
 		return
 	}
 
@@ -290,7 +301,11 @@ func (lrg *LookupRouterGroup[T]) HandleCount(c *gin.Context) {
 func (lrg *LookupRouterGroup[T]) HandleInvalidate(c *gin.Context) {
 	var req InvalidateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "invalid request", "error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "invalid request",
+			"error":   err.Error(),
+		})
 		return
 	}
 
@@ -300,20 +315,30 @@ func (lrg *LookupRouterGroup[T]) HandleInvalidate(c *gin.Context) {
 	if req.Pattern != "" {
 		// 按模式删除
 		if err := lrg.Service.InvalidateCacheByPattern(ctx, req.Pattern); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "invalidate failed", "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"code":    500,
+				"message": "invalidate failed",
+				"error":   err.Error(),
+			})
 			return
 		}
-		// 获取删除的键数量（这里简化处理）
-		deletedCount = -1 // 表示按模式删除，无法精确统计
+		deletedCount = -1 // -1 表示按模式删除，无法精确统计
 	} else if len(req.Keys) > 0 {
 		// 按键列表删除
 		if err := lrg.Service.InvalidateCache(ctx, req.Keys...); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "invalidate failed", "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"code":    500,
+				"message": "invalidate failed",
+				"error":   err.Error(),
+			})
 			return
 		}
 		deletedCount = len(req.Keys)
 	} else {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "either keys or pattern must be provided"})
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "either keys or pattern must be provided",
+		})
 		return
 	}
 
@@ -322,11 +347,4 @@ func (lrg *LookupRouterGroup[T]) HandleInvalidate(c *gin.Context) {
 		Message: "success",
 		Count:   deletedCount,
 	})
-}
-
-// ========== 便捷方法 ==========
-
-func (lrg *LookupRouterGroup[T]) RegisterCommonMethods(keyPattern string, cacheExpire time.Duration) {
-	lrg.RegisterListMethod(keyPattern, cacheExpire)
-	lrg.RegisterFallbackMethod(keyPattern, cacheExpire)
 }

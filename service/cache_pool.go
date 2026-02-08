@@ -17,12 +17,12 @@ type RedisManager struct {
 
 var globalRedisManager *RedisManager
 
-// InitRedis 初始化 Redis 连接
+// InitRedis 初始化 Redis 连接（不变）
 func InitRedis() (*RedisManager, error) {
 	client := redis.NewClient(&redis.Options{
 		Addr:         fmt.Sprintf("%s:%s", os.Getenv("REDIS_HOST"), os.Getenv("REDIS_PORT")),
 		Password:     os.Getenv("REDIS_PASSWORD"),
-		DB:           0, // 使用默认 DB
+		DB:           0,
 		PoolSize:     50,
 		MinIdleConns: 10,
 		MaxRetries:   3,
@@ -31,7 +31,6 @@ func InitRedis() (*RedisManager, error) {
 		WriteTimeout: 3 * time.Second,
 	})
 
-	// 测试连接
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -43,7 +42,7 @@ func InitRedis() (*RedisManager, error) {
 	return globalRedisManager, nil
 }
 
-// GetRedis 获取全局 Redis 实例
+// GetRedis 获取全局 Redis 实例（不变）
 func GetRedis() *redis.Client {
 	if globalRedisManager == nil {
 		panic("redis not initialized, call InitRedis first")
@@ -51,21 +50,35 @@ func GetRedis() *redis.Client {
 	return globalRedisManager.Client
 }
 
-// Close 关闭 Redis 连接
+func (sm *ServiceManager[T]) GetRedisManager() *RedisManager {
+	return globalRedisManager
+}
+
+// Close 关闭 Redis 连接（不变）
 func (rm *RedisManager) Close() error {
 	return rm.Client.Close()
 }
 
-// Set 设置缓存（带过期时间）
+// Set 设置缓存（带过期时间）—— 修改在这里
 func (rm *RedisManager) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error {
-	data, err := json.Marshal(value)
-	if err != nil {
-		return fmt.Errorf("failed to marshal value: %w", err)
+	var data []byte
+	var err error
+
+	// 如果传入的已经是 []byte，就直接用
+	if b, ok := value.([]byte); ok {
+		data = b
+	} else {
+		// 其他类型（结构体、map、基本类型等）统一 json 序列化
+		data, err = json.Marshal(value)
+		if err != nil {
+			return fmt.Errorf("failed to json marshal value for key %s: %w", key, err)
+		}
 	}
+
 	return rm.Client.Set(ctx, key, data, expiration).Err()
 }
 
-// Get 获取缓存
+// Get 获取缓存（不变）
 func (rm *RedisManager) Get(ctx context.Context, key string, dest interface{}) error {
 	data, err := rm.Client.Get(ctx, key).Bytes()
 	if err != nil {
@@ -74,32 +87,43 @@ func (rm *RedisManager) Get(ctx context.Context, key string, dest interface{}) e
 	return json.Unmarshal(data, dest)
 }
 
-// Delete 删除缓存
+// Delete 删除缓存（不变）
 func (rm *RedisManager) Delete(ctx context.Context, keys ...string) error {
 	return rm.Client.Del(ctx, keys...).Err()
 }
 
-// Exists 检查键是否存在
+// Exists 检查键是否存在（不变）
 func (rm *RedisManager) Exists(ctx context.Context, key string) (bool, error) {
 	n, err := rm.Client.Exists(ctx, key).Result()
 	return n > 0, err
 }
 
-// SetMultiple 批量设置缓存
+// SetMultiple 批量设置缓存 —— 修改在这里
 func (rm *RedisManager) SetMultiple(ctx context.Context, items map[string]interface{}, expiration time.Duration) error {
 	pipe := rm.Client.Pipeline()
+
 	for key, value := range items {
-		data, err := json.Marshal(value)
-		if err != nil {
-			return fmt.Errorf("failed to marshal value for key %s: %w", key, err)
+		var data []byte
+		var err error
+
+		// 同 Set 的逻辑：先转成 []byte
+		if b, ok := value.([]byte); ok {
+			data = b
+		} else {
+			data, err = json.Marshal(value)
+			if err != nil {
+				return fmt.Errorf("failed to json marshal value for key %s: %w", key, err)
+			}
 		}
+
 		pipe.Set(ctx, key, data, expiration)
 	}
+
 	_, err := pipe.Exec(ctx)
 	return err
 }
 
-// GetMultiple 批量获取缓存
+// GetMultiple 批量获取缓存（不变）
 func (rm *RedisManager) GetMultiple(ctx context.Context, keys []string) (map[string][]byte, error) {
 	pipe := rm.Client.Pipeline()
 	cmds := make([]*redis.StringCmd, len(keys))
