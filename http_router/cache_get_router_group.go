@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"AbstractManager/service"
@@ -115,14 +116,20 @@ func (lrg *LookupRouterGroup[T]) executeLookup(
 ) (map[string]*T, []string, error) {
 
 	// 1. 获取所有匹配的键
+	// redisClient := service.GetRedis()
+	// allKeys, err := redisClient.Keys(ctx, keyPattern).Result()
+	// if err != nil {
+	// 	return nil, nil, fmt.Errorf("failed to get keys: %w", err)
+	// }
+
+	// if len(allKeys) == 0 {
+	// 	return make(map[string]*T), []string{}, nil
+	// }
+	// 1. 获取所有匹配的键（改动）
 	redisClient := service.GetRedis()
 	allKeys, err := redisClient.Keys(ctx, keyPattern).Result()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get keys: %w", err)
-	}
-
-	if len(allKeys) == 0 {
-		return make(map[string]*T), []string{}, nil
 	}
 
 	// 2. 应用自定义过滤（如果启用）
@@ -153,6 +160,17 @@ func (lrg *LookupRouterGroup[T]) executeLookup(
 		FallbackToDB: fallbackToDB,
 	}
 
+	// ===== 新增：只保留普通对象 key =====
+	filteredKeys := make([]string, 0, len(allKeys))
+	for _, k := range allKeys {
+		if !strings.HasSuffix(k, ":version") && !strings.HasSuffix(k, ":meta") {
+			filteredKeys = append(filteredKeys, k)
+		}
+	}
+	allKeys = filteredKeys
+	if len(allKeys) == 0 {
+		return make(map[string]*T), []string{}, nil
+	}
 	result, err := lrg.Service.LookupQuery(ctx, allKeys, opts)
 	if err != nil {
 		return nil, nil, fmt.Errorf("lookup query failed: %w", err)
