@@ -182,7 +182,7 @@ func (sm *ServiceManager[T]) WritedownAllToCache(ctx context.Context, buildKeyFu
 
 func (sm *ServiceManager[T]) WarmupCache(ctx context.Context, queryFunc func(*gorm.DB) *gorm.DB, buildKeyFunc func(*T) string, expiration time.Duration) error {
 	result, err := sm.GetQueryWithoutTransaction(ctx, queryFunc, &QueryOptions{
-		OrderBy: "access_count", Order: "DESC", Page: 1, PageSize: 1000,
+		OrderBy: "id", Order: "DESC", Page: 1, PageSize: 1000,
 	})
 	if err != nil || len(result.Data) == 0 {
 		return err

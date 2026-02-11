@@ -3,6 +3,8 @@ package http_router
 import (
 	"fmt"
 	"net/http"
+	"os"
+	"strconv"
 	"time"
 
 	"AbstractManager/service"
@@ -105,13 +107,31 @@ func (wdg *WritedownRouterGroup[T]) RegisterRoutes(basePath string) {
 	r.POST(basePath+"/warmup", wdg.HandleWarmupCache)
 }
 
-// ==================== 公共辅助 ====================
+// ==================== 公共辅助 (逻辑更新点) ====================
 
-func parseExpiration(defaultSec int64, customSec int64) time.Duration {
-	if customSec <= 0 {
-		customSec = defaultSec
+// getEnvCacheTime 获取环境变量中的默认过期时间
+func getEnvCacheTime() int64 {
+	val := os.Getenv("CACHE_TTL_SECONDS")
+	if val != "" {
+		if sec, err := strconv.ParseInt(val, 10, 64); err == nil && sec > 0 {
+			return sec
+		}
 	}
-	return time.Duration(customSec) * time.Second
+	return 3600 // 最终兜底：1小时
+}
+
+// parseExpiration 优先使用 customSec，如果为0则尝试环境变量，最后使用 fallbackDefault
+func parseExpiration(fallbackDefault int64, customSec int64) time.Duration {
+	// 1. 如果请求体自带了时间，优先使用
+	if customSec > 0 {
+		return time.Duration(customSec) * time.Second
+	}
+	// 2. 如果 fallbackDefault 是标准默认值(3600)，说明调用方希望使用“全局默认值”
+	if fallbackDefault == 3600 {
+		return time.Duration(getEnvCacheTime()) * time.Second
+	}
+	// 3. 否则使用传入的特定 fallback（例如 LockTimeout 的默认值）
+	return time.Duration(fallbackDefault) * time.Second
 }
 
 func respondError[T any](c *gin.Context, code int, msg string) {
@@ -143,6 +163,7 @@ func (wdg *WritedownRouterGroup[T]) HandleWritedownSingle(c *gin.Context) {
 		return
 	}
 
+	// 使用全局默认逻辑
 	expiration := parseExpiration(3600, req.ExpirationSeconds)
 
 	var data *T
@@ -189,11 +210,8 @@ func (wdg *WritedownRouterGroup[T]) HandleWritedownWithLock(c *gin.Context) {
 		respondError[T](c, http.StatusBadRequest, fmt.Sprintf("invalid request: %v", err))
 		return
 	}
-	if req.Key == "" || req.ID == nil {
-		respondError[T](c, http.StatusBadRequest, "key and id cannot be empty")
-		return
-	}
 
+	// 缓存过期使用全局默认，分布式锁超时保持较短的硬编码默认(5s)
 	expiration := parseExpiration(3600, req.Expiration)
 	lockTimeout := parseExpiration(5, req.LockTimeout)
 
@@ -251,7 +269,6 @@ func (wdg *WritedownRouterGroup[T]) HandleRefreshCache(c *gin.Context) {
 }
 
 // ==================== 批量写入 ====================
-
 func (wdg *WritedownRouterGroup[T]) HandleWritedownQuery(c *gin.Context) {
 	var req WritedownQueryRequest[T]
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -294,8 +311,6 @@ func (wdg *WritedownRouterGroup[T]) HandleWritedownQuery(c *gin.Context) {
 		}
 		respondSuccess[T](c, 0, nil)
 		return
-	} else {
-		respondError[T](c, http.StatusBadRequest, "either data, ids, or load_all must be provided")
 	}
 }
 
@@ -337,7 +352,7 @@ func (wdg *WritedownRouterGroup[T]) HandleWarmupCache(c *gin.Context) {
 		req.Limit = 1000
 	}
 	if req.OrderBy == "" {
-		req.OrderBy = "access_count"
+		req.OrderBy = "id"
 	}
 
 	buildKey := wdg.getKeyFunc(req.KeyTemplate)

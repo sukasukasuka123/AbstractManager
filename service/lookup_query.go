@@ -80,25 +80,34 @@ func (sm *ServiceManager[T]) LookupQuery(
 }
 
 // LookupQueryByPattern 根据键模式从缓存中查询数据
+// LookupQueryByPattern 改进版：使用 SCAN 代替 KEYS
 func (sm *ServiceManager[T]) LookupQueryByPattern(
 	ctx context.Context,
 	pattern string,
 	opts *LookupQueryOptions,
 ) (map[string]*T, error) {
 	redis := GetRedis()
+	var allKeys []string
+	var cursor uint64
 
-	// 获取匹配的键
-	keys, err := redis.Keys(ctx, pattern).Result()
-	if err != nil {
-		return nil, fmt.Errorf("failed to scan keys with pattern %s: %w", pattern, err)
+	// 内部使用 SCAN，对 Redis 更友好
+	for {
+		keys, nextCursor, err := redis.Scan(ctx, cursor, pattern, 100).Result()
+		if err != nil {
+			return nil, fmt.Errorf("scan keys failed: %w", err)
+		}
+		allKeys = append(allKeys, keys...)
+		cursor = nextCursor
+		if cursor == 0 {
+			break
+		}
 	}
 
-	if len(keys) == 0 {
+	if len(allKeys) == 0 {
 		return make(map[string]*T), nil
 	}
 
-	// 批量查询
-	return sm.LookupQuery(ctx, keys, opts)
+	return sm.LookupQuery(ctx, allKeys, opts)
 }
 
 // LookupQueryWithRefresh 从缓存查询数据，如果缓存不存在则从数据库加载并刷新缓存
