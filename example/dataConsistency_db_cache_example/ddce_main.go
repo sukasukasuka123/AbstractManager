@@ -55,9 +55,6 @@ func initRouter(userSvc *service.ServiceManager[model.User]) *gin.Engine {
 	lookupRg.SetCacheAsideConfig(getCacheAsideTTL(), getCacheHitRefresh())
 	lookupRg.RegisterRoutes("/lookup")
 
-	// Sync 路由
-	group.POST("/sync/cache-to-db", handleCacheToDBSync(userSvc))
-
 	return r
 }
 
@@ -78,26 +75,7 @@ type CacheToDBResult struct {
 	Mode          string        `json:"mode"`
 }
 
-func handleCacheToDBSync(userSvc *service.ServiceManager[model.User]) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		var req CacheToDBRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(400, gin.H{"code": 400, "message": err.Error()})
-			return
-		}
-
-		result, err := syncCacheToDatabase(c.Request.Context(), userSvc, &req)
-		if err != nil {
-			c.JSON(500, gin.H{"code": 500, "message": err.Error()})
-			return
-		}
-
-		c.JSON(200, gin.H{"code": 0, "message": "success", "result": result})
-	}
-}
-
 // --- 核心同步逻辑 ---
-
 func syncCacheToDatabase(
 	ctx context.Context,
 	userSvc *service.ServiceManager[model.User],
@@ -151,13 +129,13 @@ func syncCacheToDatabase(
 	if req.RecacheAfterSync {
 		recached, err := recacheUsers(ctx, users, getCacheAsideTTL())
 		if err != nil {
-			log.Printf("⚠ Recache warning: %v", err)
+			log.Printf("Recache warning: %v", err)
 		} else {
 			result.RecachedItems = recached
-			log.Printf("✓ Synced %d items, recached with TTL %v", len(users), getCacheAsideTTL())
+			log.Printf("Synced %d items, recached with TTL %v", len(users), getCacheAsideTTL())
 		}
 	} else {
-		log.Printf("✓ Synced %d items to DB", len(users))
+		log.Printf("Synced %d items to DB", len(users))
 	}
 
 	return result, nil
@@ -172,7 +150,7 @@ func recacheUsers(ctx context.Context, users []model.User, ttl time.Duration) (i
 		key := fmt.Sprintf("user:%d", user.ID)
 		jsonData, err := json.Marshal(user)
 		if err != nil {
-			log.Printf("⚠ Marshal error for user %d: %v", user.ID, err)
+			log.Printf("Marshal error for user %d: %v", user.ID, err)
 			continue
 		}
 		pipe.Set(ctx, key, jsonData, ttl)
@@ -222,13 +200,13 @@ func startPeriodicSync(ctx context.Context, userSvc *service.ServiceManager[mode
 			result, err := syncCacheToDatabase(ctx, userSvc, &CacheToDBRequest{
 				KeyPattern:       "user:*",
 				ConflictStrategy: "upsert",
-				RecacheAfterSync: false, // ✅ 修复：落库后不重新缓存，避免无限刷新 TTL
+				RecacheAfterSync: false, // 落库后不重新缓存，避免无限刷新 TTL
 			})
 
 			if err != nil {
 				log.Printf("❌ Sync failed: %v", err)
 			} else if result.TotalSynced > 0 {
-				log.Printf("✅ Synced: %d items, took: %v (no recache)",
+				log.Printf("Synced: %d items, took: %v (no recache)",
 					result.TotalSynced, result.Duration)
 			}
 		case <-ctx.Done():

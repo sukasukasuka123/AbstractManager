@@ -176,7 +176,7 @@ func (lrg *LookupRouterGroup[T]) executeLookup(
 	}
 	allKeys = filteredKeys
 
-	// ✅ 修复：如果 Redis 没有数据
+	// 如果 Redis 没有数据
 	// 1. 有 filters 时，总是从 DB 查询（因为可能缓存中没有符合条件的数据）
 	// 2. 无 filters 且 fallback_db=true 时，从 DB 加载所有数据
 	if len(allKeys) == 0 {
