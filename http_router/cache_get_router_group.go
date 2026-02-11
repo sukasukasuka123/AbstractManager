@@ -211,37 +211,15 @@ func (lrg *LookupRouterGroup[T]) loadFromDBAndCache(
 	var queryFunc func(*gorm.DB) *gorm.DB
 
 	if len(filters) > 0 {
+		gormFilters, err := filter_translator.DefaultGormRegistry.TranslateBatch(filters)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid gorm filters: %w", err)
+		}
+
 		queryFunc = func(db *gorm.DB) *gorm.DB {
-			for _, filter := range filters {
-				switch filter.Operator {
-				case "=", "==":
-					db = db.Where(fmt.Sprintf("%s = ?", filter.Field), filter.Value)
-				case "!=", "<>":
-					db = db.Where(fmt.Sprintf("%s != ?", filter.Field), filter.Value)
-				case ">":
-					db = db.Where(fmt.Sprintf("%s > ?", filter.Field), filter.Value)
-				case ">=":
-					db = db.Where(fmt.Sprintf("%s >= ?", filter.Field), filter.Value)
-				case "<":
-					db = db.Where(fmt.Sprintf("%s < ?", filter.Field), filter.Value)
-				case "<=":
-					db = db.Where(fmt.Sprintf("%s <= ?", filter.Field), filter.Value)
-				case "in":
-					db = db.Where(fmt.Sprintf("%s IN ?", filter.Field), filter.Value)
-				case "not_in":
-					db = db.Where(fmt.Sprintf("%s NOT IN ?", filter.Field), filter.Value)
-				case "like":
-					db = db.Where(fmt.Sprintf("%s LIKE ?", filter.Field), filter.Value)
-				case "between":
-					if vals, ok := filter.Value.([]interface{}); ok && len(vals) == 2 {
-						db = db.Where(fmt.Sprintf("%s BETWEEN ? AND ?", filter.Field), vals[0], vals[1])
-					}
-				}
-			}
-			return db
+			return filter_translator.ApplyGormFilters(db, gormFilters)
 		}
 	}
-
 	// 从数据库查询数据
 	queryResult, err := lrg.Service.GetQueryWithoutTransaction(ctx, queryFunc, nil)
 	if err != nil {

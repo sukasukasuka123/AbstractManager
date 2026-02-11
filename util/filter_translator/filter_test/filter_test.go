@@ -259,9 +259,5 @@ func Example_custom_translator() {
 func Example_get_supported_operators() {
 	gormOps := filter_translator.DefaultGormRegistry.GetSupportedOperators()
 	fmt.Println("GORM supported operators:", gormOps)
-
-	redisOps := filter_translator.DefaultRedisRegistry.GetSupportedOperators()
-	fmt.Println("Redis supported operators:", redisOps)
-
 	// 前端可以使用这个列表来生成过滤器 UI
 }

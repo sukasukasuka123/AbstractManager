@@ -124,14 +124,14 @@ func (t *GormEqualTranslator) Translate(param FilterParam) (BaseFilter, error) {
 	return &GormEqualFilter{
 		GenericFilter: &GenericFilter{
 			Field:    param.Field,
-			Operator: "eq",
+			Operator: "=",
 			Value:    param.Value,
 		},
 	}, nil
 }
 
 func (t *GormEqualTranslator) SupportedOperator() string {
-	return "eq"
+	return "="
 }
 
 func (t *GormEqualTranslator) Validate(param FilterParam) error {
@@ -151,14 +151,14 @@ func (t *GormNotEqualTranslator) Translate(param FilterParam) (BaseFilter, error
 	return &GormNotEqualFilter{
 		GenericFilter: &GenericFilter{
 			Field:    param.Field,
-			Operator: "ne",
+			Operator: "!=",
 			Value:    param.Value,
 		},
 	}, nil
 }
 
 func (t *GormNotEqualTranslator) SupportedOperator() string {
-	return "ne"
+	return "!="
 }
 
 func (t *GormNotEqualTranslator) Validate(param FilterParam) error {
@@ -178,14 +178,14 @@ func (t *GormGreaterThanTranslator) Translate(param FilterParam) (BaseFilter, er
 	return &GormGreaterThanFilter{
 		GenericFilter: &GenericFilter{
 			Field:    param.Field,
-			Operator: "gt",
+			Operator: ">",
 			Value:    param.Value,
 		},
 	}, nil
 }
 
 func (t *GormGreaterThanTranslator) SupportedOperator() string {
-	return "gt"
+	return ">"
 }
 
 func (t *GormGreaterThanTranslator) Validate(param FilterParam) error {
@@ -205,14 +205,14 @@ func (t *GormGreaterThanOrEqualTranslator) Translate(param FilterParam) (BaseFil
 	return &GormGreaterThanOrEqualFilter{
 		GenericFilter: &GenericFilter{
 			Field:    param.Field,
-			Operator: "gte",
+			Operator: ">=",
 			Value:    param.Value,
 		},
 	}, nil
 }
 
 func (t *GormGreaterThanOrEqualTranslator) SupportedOperator() string {
-	return "gte"
+	return ">="
 }
 
 func (t *GormGreaterThanOrEqualTranslator) Validate(param FilterParam) error {
@@ -232,14 +232,14 @@ func (t *GormLessThanTranslator) Translate(param FilterParam) (BaseFilter, error
 	return &GormLessThanFilter{
 		GenericFilter: &GenericFilter{
 			Field:    param.Field,
-			Operator: "lt",
+			Operator: "<",
 			Value:    param.Value,
 		},
 	}, nil
 }
 
 func (t *GormLessThanTranslator) SupportedOperator() string {
-	return "lt"
+	return "<"
 }
 
 func (t *GormLessThanTranslator) Validate(param FilterParam) error {
@@ -259,14 +259,14 @@ func (t *GormLessThanOrEqualTranslator) Translate(param FilterParam) (BaseFilter
 	return &GormLessThanOrEqualFilter{
 		GenericFilter: &GenericFilter{
 			Field:    param.Field,
-			Operator: "lte",
+			Operator: "<=",
 			Value:    param.Value,
 		},
 	}, nil
 }
 
 func (t *GormLessThanOrEqualTranslator) SupportedOperator() string {
-	return "lte"
+	return "<="
 }
 
 func (t *GormLessThanOrEqualTranslator) Validate(param FilterParam) error {
